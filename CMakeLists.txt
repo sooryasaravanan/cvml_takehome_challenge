@@ -7,12 +7,22 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Download nlohmann/json using FetchContent
 include(FetchContent)
+
 FetchContent_Declare(
   json
   GIT_REPOSITORY https://github.com/nlohmann/json.git
   GIT_TAG v3.11.2
 )
 FetchContent_MakeAvailable(json)
+
+# Download Boost using FetchContent (for Boost Geometry)
+# Boost Geometry is header-only, so we download the full Boost headers
+# Using Boost 1.83.0 from official source (more stable URL)
+FetchContent_Declare(
+  boost
+  URL https://sourceforge.net/projects/boost/files/boost/1.83.0/boost_1_83_0.tar.gz/download
+)
+FetchContent_MakeAvailable(boost)
 
 # Find required packages
 find_package(Eigen3 REQUIRED)
@@ -31,6 +41,17 @@ set(SOURCES
 
 # Executable
 add_executable(${PROJECT_NAME} ${SOURCES})
+
+# Boost include directory (from FetchContent)
+# Boost headers are in the root of the extracted archive
+# FetchContent makes the source directory available after MakeAvailable
+set(BOOST_ROOT "${CMAKE_CURRENT_BINARY_DIR}/_deps/boost-src")
+if(EXISTS "${BOOST_ROOT}/boost/geometry.hpp")
+    target_include_directories(${PROJECT_NAME} PRIVATE ${BOOST_ROOT})
+    message(STATUS "Boost Geometry found at: ${BOOST_ROOT}")
+else()
+    message(WARNING "Boost Geometry headers not found at expected location")
+endif()
 
 # Define data directory path as compile definition
 # This makes the path portable across different build configurations
