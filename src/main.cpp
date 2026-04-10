@@ -64,9 +64,89 @@ int main() {
   
   
 
-  // TODO: do your stuff here
+  std::string data_root = std::string(PROJECT_ROOT) + "/data";
+  std::string output_root = std::string(PROJECT_ROOT) + "/output";
 
+  MultiPolygon2D combined;
+  int morph_size = 5;
+  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(morph_size, morph_size));
+  float plane_d = ground_plane_normal.dot(ground_plane_point);
 
+  for (size_t i = 0; i < views.size(); i++) {
+    cv::Mat m = loadMask(data_root + "/masks", views[i]);
+
+    cv::morphologyEx(m, m, cv::MORPH_CLOSE, kernel);
+    cv::morphologyEx(m, m, cv::MORPH_OPEN, kernel);
+
+    MultiPolygon2D bnd = extractBoundary(m);
+    if (bnd.empty()) continue;
+
+    // filter out tiny contours
+    MultiPolygon2D filtered;
+    for (const auto &p : bnd) {
+      if (bg::area(p) > 500.0) filtered.push_back(p);
+    }
+    if (filtered.empty()) continue;
+
+    // backproject each polygon onto the ground plane
+    MultiPolygon2D world_poly;
+    for (const auto &poly : filtered) {
+      Polygon2D wp;
+      for (const auto &pt : poly.outer()) {
+        float u = bg::get<0>(pt);
+        float v = bg::get<1>(pt);
+        Ray r = views[i].pixelToRay(u, v);
+        float denom = r.direction.dot(ground_plane_normal);
+        float t = (ground_plane_point - r.origin).dot(ground_plane_normal) / denom;
+        Eigen::Vector3f hit = r.origin + t * r.direction;
+        bg::append(wp.outer(), Point2D(hit.x(), hit.y()));
+      }
+      if (wp.outer().size() >= 3) {
+        auto &ring = wp.outer();
+        if (bg::get<0>(ring.front()) != bg::get<0>(ring.back()) ||
+            bg::get<1>(ring.front()) != bg::get<1>(ring.back())) {
+          ring.push_back(ring.front());
+        }
+        bg::correct(wp);
+        world_poly.push_back(wp);
+      }
+    }
+    if (world_poly.empty()) continue;
+
+    if (combined.empty()) {
+      combined = world_poly;
+    } else {
+      MultiPolygon2D result;
+      try {
+        bg::union_(combined, world_poly, result);
+        combined = result;
+      } catch (...) {
+        std::cerr << "Warning: union failed for view " << i << ", skipping" << std::endl;
+      }
+    }
+    std::cout << "Processed view " << i + 1 << "/" << views.size() << ": " << views[i].filename << std::endl;
+  }
+
+  std::cout << "Combined mask has " << combined.size() << " polygons" << std::endl;
+
+  // write combined mask boundary as green line segments to ply
+  {
+    PointPlyStream ply(output_root + "/combined_mask.ply");
+    ply.WriteHeader({"float x", "float y", "float z", "uchar red", "uchar green", "uchar blue"});
+
+    for (const auto &poly : combined) {
+      const auto &ring = poly.outer();
+      for (size_t j = 0; j + 1 < ring.size(); j++) {
+        float x0 = bg::get<0>(ring[j]), y0 = bg::get<1>(ring[j]);
+        float x1 = bg::get<0>(ring[j + 1]), y1 = bg::get<1>(ring[j + 1]);
+        float z0 = (plane_d - ground_plane_normal.x() * x0 - ground_plane_normal.y() * y0) / ground_plane_normal.z();
+        float z1 = (plane_d - ground_plane_normal.x() * x1 - ground_plane_normal.y() * y1) / ground_plane_normal.z();
+        generate3DLineSegment(Eigen::Vector3f(x0, y0, z0), Eigen::Vector3f(x1, y1, z1),
+                              0.1f, 0, 255, 0, ply);
+      }
+    }
+    std::cout << "Wrote combined mask to " << output_root << "/combined_mask.ply" << std::endl;
+  }
 
   return 0;
 }
